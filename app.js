@@ -1127,9 +1127,7 @@ function toggleMicrophone() {
       } else {
         icon.innerHTML = `
           <line x1="1" y1="1" x2="23" y2="23"/>
-          <path d="M9 9v3a3 3 0 0 0 5.12 2.12l1.27-1.27A3 3 0 0 0 15 12V4a3 3 0 0 0-3-3 3 3 
-          <path d="M9 9v3a3 3 0 0 0 5.12 2.12l1.27-1.27A3 3 0 0 0 15 12V4a3 3 0 0 0-3-3 3 3
-0 0 0-3 3v5"/>
+          <path d="M9 9v3a3 3 0 0 0 5.12 2.12l1.27-1.27A3 3 0 0 0 15 12V4a3 3 0 0 0-3-3 3 3 0 0 0-3 3v5"/>
           <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/>
           <line x1="12" y1="19" x2="12" y2="23"/>
           <line x1="8" y1="23" x2="16" y2="23"/>
@@ -1179,13 +1177,24 @@ async function sendCallSignal(type, data) {
     const chatRoomId = getChatRoomId(currentUser.uid, selectedUser.uid)
     const callRef = doc(db, "calls", chatRoomId)
 
+    // Serialize RTCIceCandidate objects for Firebase
+    let serializedData = data
+    if (type === "ice-candidate" && data instanceof RTCIceCandidate) {
+      serializedData = {
+        candidate: data.candidate,
+        sdpMLineIndex: data.sdpMLineIndex,
+        sdpMid: data.sdpMid,
+        usernameFragment: data.usernameFragment,
+      }
+    }
+
     await setDoc(
       callRef,
       {
         type: type,
         from: currentUser.uid,
         to: selectedUser.uid,
-        data: data,
+        data: serializedData,
         timestamp: serverTimestamp(),
       },
       { merge: true },
@@ -1231,7 +1240,14 @@ function listenForCallSignals() {
             console.log("Received ICE candidate")
             if (peerConnection && callData.data && peerConnection.remoteDescription) {
               try {
-                await peerConnection.addIceCandidate(new RTCIceCandidate(callData.data))
+                // Reconstruct RTCIceCandidate from serialized data
+                const candidate = new RTCIceCandidate({
+                  candidate: callData.data.candidate,
+                  sdpMLineIndex: callData.data.sdpMLineIndex,
+                  sdpMid: callData.data.sdpMid,
+                  usernameFragment: callData.data.usernameFragment,
+                })
+                await peerConnection.addIceCandidate(candidate)
                 console.log("Added ICE candidate")
               } catch (error) {
                 console.error("Error adding ICE candidate:", error)
