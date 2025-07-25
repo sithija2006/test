@@ -624,19 +624,27 @@ async function initializeVideoCall() {
     console.log("Requesting media with constraints:", constraints)
     localStream = await navigator.mediaDevices.getUserMedia(constraints)
     console.log(
-      "Got local stream:",
-      localStream.getTracks().map((t) => t.kind),
+      "Got local stream with tracks:",
+      localStream.getTracks().map((t) => `${t.kind}: ${t.enabled}`),
     )
 
-    localVideo.srcObject = localStream
-    localVideoPlaceholder.style.display = "none"
+    if (localVideo) {
+      localVideo.srcObject = localStream
+      localVideoPlaceholder.style.display = "none"
 
-    localVideo.playsInline = true
-    localVideo.muted = true
-    localVideo.setAttribute("webkit-playsinline", "true")
+      localVideo.playsInline = true
+      localVideo.muted = true
+      localVideo.setAttribute("webkit-playsinline", "true")
+      localVideo.autoplay = true
 
-    // Ensure local video plays
-    await localVideo.play()
+      // Ensure local video plays
+      try {
+        await localVideo.play()
+        console.log("Local video started playing")
+      } catch (playError) {
+        console.error("Local video play error:", playError)
+      }
+    }
 
     return true
   } catch (error) {
@@ -649,6 +657,8 @@ async function initializeVideoCall() {
       errorMessage = "No camera or microphone found on this device."
     } else if (error.name === "NotReadableError") {
       errorMessage = "Camera is being used by another application."
+    } else if (error.name === "OverconstrainedError") {
+      errorMessage = "Camera constraints not supported by your device."
     }
 
     showNotification("Camera Error", errorMessage)
@@ -662,7 +672,7 @@ async function createPeerConnection() {
   // Add local stream tracks first
   if (localStream) {
     localStream.getTracks().forEach((track) => {
-      console.log("Adding local track:", track.kind)
+      console.log("Adding local track:", track.kind, track.enabled)
       peerConnection.addTrack(track, localStream)
     })
   }
@@ -694,35 +704,61 @@ async function createPeerConnection() {
   }
 
   peerConnection.ontrack = (event) => {
-    console.log("Received remote track:", event.track.kind)
-    console.log("Remote streams:", event.streams)
+    console.log("Received remote track:", event.track.kind, event.track.enabled)
+    console.log("Remote streams:", event.streams.length)
 
     if (event.streams && event.streams[0]) {
+      console.log("Setting remote stream")
       remoteStream = event.streams[0]
-      remoteVideo.srcObject = remoteStream
-      remoteVideo.playsInline = true
-      remoteVideo.setAttribute("webkit-playsinline", "true")
 
-      // Ensure video plays
-      remoteVideo.play().catch((e) => console.log("Remote video play error:", e))
+      // Ensure remote video element exists and is ready
+      if (remoteVideo) {
+        remoteVideo.srcObject = remoteStream
+        remoteVideo.playsInline = true
+        remoteVideo.setAttribute("webkit-playsinline", "true")
+        remoteVideo.autoplay = true
 
-      // Hide placeholder when video starts playing
-      remoteVideo.onloadedmetadata = () => {
-        console.log("Remote video metadata loaded")
-        remoteVideoPlaceholder.style.display = "none"
-      }
+        // Force play and handle the promise
+        const playPromise = remoteVideo.play()
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => {
+              console.log("Remote video started playing")
+              remoteVideoPlaceholder.style.display = "none"
+            })
+            .catch((error) => {
+              console.error("Remote video play failed:", error)
+              // Try again after a short delay
+              setTimeout(() => {
+                remoteVideo.play().catch((e) => console.log("Retry failed:", e))
+              }, 1000)
+            })
+        }
 
-      remoteVideo.onplaying = () => {
-        console.log("Remote video is playing")
-        remoteVideoPlaceholder.style.display = "none"
+        // Additional event listeners for debugging
+        remoteVideo.onloadedmetadata = () => {
+          console.log("Remote video metadata loaded:", remoteVideo.videoWidth, "x", remoteVideo.videoHeight)
+          remoteVideoPlaceholder.style.display = "none"
+        }
+
+        remoteVideo.onplaying = () => {
+          console.log("Remote video is playing")
+          remoteVideoPlaceholder.style.display = "none"
+        }
+
+        remoteVideo.onerror = (e) => {
+          console.error("Remote video error:", e)
+        }
       }
     }
   }
 
   peerConnection.onicecandidate = (event) => {
     if (event.candidate) {
-      console.log("Sending ICE candidate")
+      console.log("Sending ICE candidate:", event.candidate.type)
       sendCallSignal("ice-candidate", event.candidate)
+    } else {
+      console.log("ICE gathering complete")
     }
   }
 
@@ -732,6 +768,27 @@ async function createPeerConnection() {
 
   peerConnection.oniceconnectionstatechange = () => {
     console.log("ICE connection state:", peerConnection.iceConnectionState)
+
+    switch (peerConnection.iceConnectionState) {
+      case "connected":
+      case "completed":
+        showConnectionStatus("Media connected")
+        callStatus.textContent = "Connected"
+        setTimeout(() => hideConnectionStatus(), 2000)
+        break
+      case "disconnected":
+        showConnectionStatus("Media disconnected")
+        callStatus.textContent = "Reconnecting..."
+        break
+      case "failed":
+        showConnectionStatus("Connection failed")
+        callStatus.textContent = "Connection failed"
+        break
+    }
+  }
+
+  peerConnection.onsignalingstatechange = () => {
+    console.log("Signaling state:", peerConnection.signalingState)
   }
 
   return peerConnection
@@ -915,17 +972,25 @@ async function startVideoCall() {
 
     await createPeerConnection()
 
+    // Create offer with proper constraints
     const offer = await peerConnection.createOffer({
       offerToReceiveAudio: true,
       offerToReceiveVideo: true,
     })
 
+    console.log("Created offer:", offer.type)
     await peerConnection.setLocalDescription(offer)
-    console.log("Local description set, sending offer")
+    console.log("Set local description (offer)")
 
+    // Send the offer
     await sendCallSignal("call-offer", {
       offer: offer,
       callerName: currentUser.email.split("@")[0],
+      callerUser: {
+        uid: currentUser.uid,
+        displayName: currentUser.email.split("@")[0],
+        email: currentUser.email,
+      },
     })
 
     showVideoCallModal()
@@ -934,15 +999,16 @@ async function startVideoCall() {
     listenForCallSignals()
 
     showConnectionStatus("Calling...")
+    callStatus.textContent = "Calling..."
   } catch (error) {
     console.error("Error starting video call:", error)
-    showNotification("Call Error", "Failed to start video call")
+    showNotification("Call Error", "Failed to start video call: " + error.message)
     endVideoCall()
   }
 }
 
 async function answerVideoCall(offer) {
-  console.log("Answering video call with offer:", offer)
+  console.log("Answering video call with offer:", offer.type)
 
   const hasMedia = await initializeVideoCall()
   if (!hasMedia) return
@@ -952,12 +1018,18 @@ async function answerVideoCall(offer) {
 
     await createPeerConnection()
 
-    console.log("Setting remote description")
+    console.log("Setting remote description (offer)")
     await peerConnection.setRemoteDescription(new RTCSessionDescription(offer))
 
     console.log("Creating answer")
-    const answer = await peerConnection.createAnswer()
+    const answer = await peerConnection.createAnswer({
+      offerToReceiveAudio: true,
+      offerToReceiveVideo: true,
+    })
+
+    console.log("Created answer:", answer.type)
     await peerConnection.setLocalDescription(answer)
+    console.log("Set local description (answer)")
 
     console.log("Sending answer")
     await sendCallSignal("call-answer", answer)
@@ -966,9 +1038,10 @@ async function answerVideoCall(offer) {
     isCallActive = true
 
     showConnectionStatus("Connecting...")
+    callStatus.textContent = "Connecting..."
   } catch (error) {
     console.error("Error answering video call:", error)
-    showNotification("Call Error", "Failed to answer video call")
+    showNotification("Call Error", "Failed to answer video call: " + error.message)
     endVideoCall()
   }
 }
@@ -1133,6 +1206,7 @@ function listenForCallSignals() {
       const callData = doc.data()
       console.log("Received call signal:", callData.type, "from:", callData.from, "to:", callData.to)
 
+      // Handle signals for the current conversation
       if (callData.to === currentUser.uid && callData.from === selectedUser.uid) {
         switch (callData.type) {
           case "call-offer":
@@ -1142,20 +1216,28 @@ function listenForCallSignals() {
             break
           case "call-answer":
             console.log("Received call answer")
-            if (peerConnection) {
-              await peerConnection.setRemoteDescription(new RTCSessionDescription(callData.data))
-              showConnectionStatus("Call accepted")
-              callStatus.textContent = "Call accepted"
+            if (peerConnection && peerConnection.signalingState === "have-local-offer") {
+              try {
+                await peerConnection.setRemoteDescription(new RTCSessionDescription(callData.data))
+                console.log("Set remote description (answer)")
+                showConnectionStatus("Call accepted, connecting media...")
+                callStatus.textContent = "Connecting media..."
+              } catch (error) {
+                console.error("Error setting remote description:", error)
+              }
             }
             break
           case "ice-candidate":
             console.log("Received ICE candidate")
-            if (peerConnection && callData.data) {
+            if (peerConnection && callData.data && peerConnection.remoteDescription) {
               try {
                 await peerConnection.addIceCandidate(new RTCIceCandidate(callData.data))
+                console.log("Added ICE candidate")
               } catch (error) {
                 console.error("Error adding ICE candidate:", error)
               }
+            } else {
+              console.log("Queuing ICE candidate - peer connection not ready")
             }
             break
           case "call-end":
