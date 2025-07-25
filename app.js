@@ -609,20 +609,21 @@ async function initializeVideoCall() {
   try {
     const constraints = {
       video: {
-        width: { ideal: isMobile ? 480 : 640, max: isMobile ? 720 : 1280 },
-        height: { ideal: isMobile ? 360 : 480, max: isMobile ? 540 : 720 },
-        frameRate: { ideal: isMobile ? 24 : 30, max: 30 },
+        width: { ideal: 640, max: 1280 },
+        height: { ideal: 480, max: 720 },
+        frameRate: { ideal: 30, max: 30 },
         facingMode: "user",
       },
       audio: {
         echoCancellation: true,
         noiseSuppression: true,
         autoGainControl: true,
-        sampleRate: isMobile ? 16000 : 44100,
       },
     }
 
+    console.log("Requesting media with constraints:", constraints)
     localStream = await navigator.mediaDevices.getUserMedia(constraints)
+    console.log("Got local stream:", localStream.getTracks().map(t => t.kind))
 
     localVideo.srcObject = localStream
     localVideoPlaceholder.style.display = "none"
@@ -630,6 +631,9 @@ async function initializeVideoCall() {
     localVideo.playsInline = true
     localVideo.muted = true
     localVideo.setAttribute("webkit-playsinline", "true")
+    
+    // Ensure local video plays
+    await localVideo.play()
 
     return true
   } catch (error) {
@@ -651,6 +655,14 @@ async function initializeVideoCall() {
 
 async function createPeerConnection() {
   peerConnection = new RTCPeerConnection(rtcConfiguration)
+
+  // Add local stream tracks first
+  if (localStream) {
+    localStream.getTracks().forEach((track) => {
+      console.log("Adding local track:", track.kind)
+      peerConnection.addTrack(track, localStream)
+    })
+  }
 
   peerConnection.onconnectionstatechange = () => {
     const state = peerConnection.connectionState
@@ -679,17 +691,44 @@ async function createPeerConnection() {
   }
 
   peerConnection.ontrack = (event) => {
-    remoteStream = event.streams[0]
-    remoteVideo.srcObject = remoteStream
-    remoteVideo.playsInline = true
-    remoteVideo.setAttribute("webkit-playsinline", "true")
-    remoteVideoPlaceholder.style.display = "none"
+    console.log("Received remote track:", event.track.kind)
+    console.log("Remote streams:", event.streams)
+    
+    if (event.streams && event.streams[0]) {
+      remoteStream = event.streams[0]
+      remoteVideo.srcObject = remoteStream
+      remoteVideo.playsInline = true
+      remoteVideo.setAttribute("webkit-playsinline", "true")
+      
+      // Ensure video plays
+      remoteVideo.play().catch(e => console.log("Remote video play error:", e))
+      
+      // Hide placeholder when video starts playing
+      remoteVideo.onloadedmetadata = () => {
+        console.log("Remote video metadata loaded")
+        remoteVideoPlaceholder.style.display = "none"
+      }
+      
+      remoteVideo.onplaying = () => {
+        console.log("Remote video is playing")
+        remoteVideoPlaceholder.style.display = "none"
+      }
+    }
   }
 
   peerConnection.onicecandidate = (event) => {
     if (event.candidate) {
+      console.log("Sending ICE candidate")
       sendCallSignal("ice-candidate", event.candidate)
     }
+  }
+
+  peerConnection.onicecandidateerror = (event) => {
+    console.error("ICE candidate error:", event)
+  }
+
+  peerConnection.oniceconnectionstatechange = () => {
+    console.log("ICE connection state:", peerConnection.iceConnectionState)
   }
 
   return peerConnection
@@ -788,56 +827,17 @@ function hideIncomingCallModal() {
   document.body.style.overflow = ""
 }
 
-// Ringtone functions
+// Ringtone functions - DISABLED
 let ringtoneAudio = null
 
 function playRingtone() {
-  try {
-    // Create a simple ringtone using Web Audio API
-    const audioContext = new (window.AudioContext || window.webkitAudioContext)()
-    const oscillator = audioContext.createOscillator()
-    const gainNode = audioContext.createGain()
-
-    oscillator.connect(gainNode)
-    gainNode.connect(audioContext.destination)
-
-    oscillator.frequency.setValueAtTime(800, audioContext.currentTime)
-    gainNode.gain.setValueAtTime(0.1, audioContext.currentTime)
-
-    oscillator.start()
-
-    // Create a repeating pattern
-    const playPattern = () => {
-      if (!incomingCallNotification?.classList.contains("hidden") || !incomingCallModal?.classList.contains("hidden")) {
-        oscillator.frequency.setValueAtTime(800, audioContext.currentTime)
-        setTimeout(() => {
-          if (oscillator) {
-            oscillator.frequency.setValueAtTime(1000, audioContext.currentTime)
-          }
-        }, 500)
-        setTimeout(playPattern, 2000)
-      } else {
-        oscillator.stop()
-      }
-    }
-
-    playPattern()
-    ringtoneAudio = { oscillator, audioContext }
-  } catch (error) {
-    console.log("Could not play ringtone:", error)
-  }
+  // Ringtone disabled per user request
+  console.log("Ringtone disabled")
 }
 
 function stopRingtone() {
-  if (ringtoneAudio) {
-    try {
-      ringtoneAudio.oscillator.stop()
-      ringtoneAudio.audioContext.close()
-    } catch (error) {
-      console.log("Error stopping ringtone:", error)
-    }
-    ringtoneAudio = null
-  }
+  // Ringtone disabled per user request
+  console.log("Ringtone stopped")
 }
 
 function showControls() {
@@ -900,6 +900,8 @@ function hideConnectionStatus() {
 async function startVideoCall() {
   if (!selectedUser || isCallActive) return
 
+  console.log("Starting video call with:", selectedUser.displayName)
+  
   const hasMedia = await initializeVideoCall()
   if (!hasMedia) return
 
@@ -908,16 +910,13 @@ async function startVideoCall() {
 
     await createPeerConnection()
 
-    localStream.getTracks().forEach((track) => {
-      peerConnection.addTrack(track, localStream)
-    })
-
     const offer = await peerConnection.createOffer({
       offerToReceiveAudio: true,
       offerToReceiveVideo: true,
     })
 
     await peerConnection.setLocalDescription(offer)
+    console.log("Local description set, sending offer")
 
     await sendCallSignal("call-offer", {
       offer: offer,
@@ -938,6 +937,8 @@ async function startVideoCall() {
 }
 
 async function answerVideoCall(offer) {
+  console.log("Answering video call with offer:", offer)
+  
   const hasMedia = await initializeVideoCall()
   if (!hasMedia) return
 
@@ -946,14 +947,14 @@ async function answerVideoCall(offer) {
 
     await createPeerConnection()
 
-    localStream.getTracks().forEach((track) => {
-      peerConnection.addTrack(track, localStream)
-    })
-
-    await peerConnection.setRemoteDescription(offer)
+    console.log("Setting remote description")
+    await peerConnection.setRemoteDescription(new RTCSessionDescription(offer))
+    
+    console.log("Creating answer")
     const answer = await peerConnection.createAnswer()
     await peerConnection.setLocalDescription(answer)
 
+    console.log("Sending answer")
     await sendCallSignal("call-answer", answer)
 
     showVideoCallModal()
@@ -1048,7 +1049,9 @@ function toggleMicrophone() {
       } else {
         icon.innerHTML = `
           <line x1="1" y1="1" x2="23" y2="23"/>
-          <path d="M9 9v3a3 3 0 0 0 5.12 2.12l1.27-1.27A3 3 0 0 0 15 12V4a3 3 0 0 0-3-3 3 3 0 0 0-3 3v5"/>
+          <path d="M9 9v3a3 3 0 0 0 5.12 2.12l1.27-1.27A3 3 0 0 0 15 12V4a3 3 0 0 0-3-3 3 3 
+          <path d="M9 9v3a3 3 0 0 0 5.12 2.12l1.27-1.27A3 3 0 0 0 15 12V4a3 3 0 0 0-3-3 3 3
+0 0 0-3 3v5"/>
           <path d="M17 16.95A7 7 0 0 1 5 12v-2m14 0v2a7 7 0 0 1-.11 1.23"/>
           <line x1="12" y1="19" x2="12" y2="23"/>
           <line x1="8" y1="23" x2="16" y2="23"/>
@@ -1120,26 +1123,38 @@ function listenForCallSignals() {
   const chatRoomId = getChatRoomId(currentUser.uid, selectedUser.uid)
   const callRef = doc(db, "calls", chatRoomId)
 
-  callUnsubscribe = onSnapshot(callRef, (doc) => {
+  callUnsubscribe = onSnapshot(callRef, async (doc) => {
     if (doc.exists()) {
       const callData = doc.data()
+      console.log("Received call signal:", callData.type, "from:", callData.from, "to:", callData.to)
 
-      if (callData.to === currentUser.uid) {
+      if (callData.to === currentUser.uid && callData.from === selectedUser.uid) {
         switch (callData.type) {
           case "call-offer":
-            // Show both notification and modal for incoming calls
+            console.log("Received call offer")
             showIncomingCallNotification(callData)
             showIncomingCallModal(callData)
             break
           case "call-answer":
-            peerConnection.setRemoteDescription(new RTCSessionDescription(callData.data))
-            showConnectionStatus("Call accepted")
-            callStatus.textContent = "Call accepted"
+            console.log("Received call answer")
+            if (peerConnection) {
+              await peerConnection.setRemoteDescription(new RTCSessionDescription(callData.data))
+              showConnectionStatus("Call accepted")
+              callStatus.textContent = "Call accepted"
+            }
             break
           case "ice-candidate":
-            peerConnection.addIceCandidate(new RTCIceCandidate(callData.data))
+            console.log("Received ICE candidate")
+            if (peerConnection && callData.data) {
+              try {
+                await peerConnection.addIceCandidate(new RTCIceCandidate(callData.data))
+              } catch (error) {
+                console.error("Error adding ICE candidate:", error)
+              }
+            }
             break
           case "call-end":
+            console.log("Call ended by remote user")
             showNotification("Call Ended", `${selectedUser.displayName} ended the call`)
             endVideoCall()
             break
