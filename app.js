@@ -713,87 +713,42 @@ async function createPeerConnection() {
 
       // Ensure remote video element exists and is ready
       if (remoteVideo) {
-        // Stop any existing playback before setting new source
-        remoteVideo.pause()
-        remoteVideo.srcObject = null
+        remoteVideo.srcObject = remoteStream
+        remoteVideo.playsInline = true
+        remoteVideo.setAttribute("webkit-playsinline", "true")
+        remoteVideo.autoplay = true
 
-        // Small delay to ensure cleanup is complete
-        setTimeout(() => {
-          remoteVideo.srcObject = remoteStream
-          remoteVideo.playsInline = true
-          remoteVideo.setAttribute("webkit-playsinline", "true")
-          remoteVideo.autoplay = true
-
-          // Improved play handling with better error management
-          const playVideo = async () => {
-            try {
-              await remoteVideo.play()
+        // Force play and handle the promise
+        const playPromise = remoteVideo.play()
+        if (playPromise !== undefined) {
+          playPromise
+            .then(() => {
               console.log("Remote video started playing")
               remoteVideoPlaceholder.style.display = "none"
-            } catch (error) {
-              console.log("Remote video play attempt failed:", error.name, error.message)
+            })
+            .catch((error) => {
+              console.error("Remote video play failed:", error)
+              // Try again after a short delay
+              setTimeout(() => {
+                remoteVideo.play().catch((e) => console.log("Retry failed:", e))
+              }, 1000)
+            })
+        }
 
-              // Handle different types of play errors
-              if (error.name === "AbortError") {
-                console.log("Play was aborted, retrying...")
-                // Wait a bit and try again
-                setTimeout(() => playVideo(), 500)
-              } else if (error.name === "NotAllowedError") {
-                console.log("Autoplay not allowed, user interaction required")
-                showConnectionStatus("Tap to enable video")
-                remoteVideo.addEventListener("click", playVideo, { once: true })
-              } else {
-                console.log("Other play error, retrying once...")
-                setTimeout(() => {
-                  remoteVideo.play().catch((e) => console.log("Final retry failed:", e.name))
-                }, 1000)
-              }
-            }
-          }
+        // Additional event listeners for debugging
+        remoteVideo.onloadedmetadata = () => {
+          console.log("Remote video metadata loaded:", remoteVideo.videoWidth, "x", remoteVideo.videoHeight)
+          remoteVideoPlaceholder.style.display = "none"
+        }
 
-          playVideo()
+        remoteVideo.onplaying = () => {
+          console.log("Remote video is playing")
+          remoteVideoPlaceholder.style.display = "none"
+        }
 
-          // Additional event listeners for debugging and handling
-          remoteVideo.onloadedmetadata = () => {
-            console.log("Remote video metadata loaded:", remoteVideo.videoWidth, "x", remoteVideo.videoHeight)
-            if (remoteVideo.videoWidth > 0 && remoteVideo.videoHeight > 0) {
-              remoteVideoPlaceholder.style.display = "none"
-            }
-          }
-
-          remoteVideo.onplaying = () => {
-            console.log("Remote video is playing")
-            remoteVideoPlaceholder.style.display = "none"
-          }
-
-          remoteVideo.onpause = () => {
-            console.log("Remote video paused")
-          }
-
-          remoteVideo.onerror = (e) => {
-            console.error("Remote video error:", e)
-            showConnectionStatus("Video error occurred")
-          }
-
-          remoteVideo.onabort = () => {
-            console.log("Remote video loading aborted")
-          }
-
-          remoteVideo.onstalled = () => {
-            console.log("Remote video stalled")
-            showConnectionStatus("Video loading...")
-          }
-
-          remoteVideo.onwaiting = () => {
-            console.log("Remote video waiting for data")
-            showConnectionStatus("Buffering...")
-          }
-
-          remoteVideo.oncanplay = () => {
-            console.log("Remote video can start playing")
-            hideConnectionStatus()
-          }
-        }, 100)
+        remoteVideo.onerror = (e) => {
+          console.error("Remote video error:", e)
+        }
       }
     }
   }
@@ -1102,34 +1057,14 @@ async function endVideoCall() {
       controlsTimeout = null
     }
 
-    // Improved stream cleanup
     if (localStream) {
-      localStream.getTracks().forEach((track) => {
-        track.stop()
-        console.log("Stopped local track:", track.kind)
-      })
+      localStream.getTracks().forEach((track) => track.stop())
       localStream = null
     }
 
     if (remoteStream) {
-      remoteStream.getTracks().forEach((track) => {
-        track.stop()
-        console.log("Stopped remote track:", track.kind)
-      })
+      remoteStream.getTracks().forEach((track) => track.stop())
       remoteStream = null
-    }
-
-    // Improved video element cleanup
-    if (localVideo) {
-      localVideo.pause()
-      localVideo.srcObject = null
-      localVideo.load() // Reset the video element
-    }
-
-    if (remoteVideo) {
-      remoteVideo.pause()
-      remoteVideo.srcObject = null
-      remoteVideo.load() // Reset the video element
     }
 
     if (peerConnection) {
@@ -1146,6 +1081,8 @@ async function endVideoCall() {
     hideIncomingCallModal()
     hideIncomingCallNotification()
 
+    if (localVideo) localVideo.srcObject = null
+    if (remoteVideo) remoteVideo.srcObject = null
     if (localVideoPlaceholder) localVideoPlaceholder.style.display = "flex"
     if (remoteVideoPlaceholder) remoteVideoPlaceholder.style.display = "flex"
 
@@ -1165,8 +1102,6 @@ async function endVideoCall() {
 
     toggleMicBtn.classList.add("active")
     toggleVideoBtn.classList.add("active")
-
-    console.log("Video call ended and cleaned up successfully")
   } catch (error) {
     console.error("Error ending video call:", error)
   }
