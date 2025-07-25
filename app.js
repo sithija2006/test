@@ -1760,7 +1760,9 @@ async function markAllMessagesAsRead() {
   try {
     const chatRoomId = getChatRoomId(currentUser.uid, selectedUser.uid)
     const messagesRef = collection(db, "chats", chatRoomId, "messages")
-    const q = query(messagesRef, where("uid", "!=", currentUser.uid), where("status", "!=", "read"))
+
+    // Get all messages from the other user that are not read
+    const q = query(messagesRef, where("uid", "==", selectedUser.uid), where("status", "in", ["sent", "delivered"]))
 
     const snapshot = await getDocs(q)
     const batch = []
