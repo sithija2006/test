@@ -1,0 +1,13 @@
+{
+  "name": "whatsapp-chat-app",
+  "version": "1.0.0",
+  "description": "A modern WhatsApp-like chat application with video calling",
+  "main": "index.html",
+  "scripts": {
+    "start": "python -m http.server 8000",
+    "build": "echo 'Static site - no build needed'"
+  },
+  "keywords": ["chat", "whatsapp", "video-call", "firebase", "pwa"],
+  "author": "ChatApp Team",
+  "license": "MIT"
+}
