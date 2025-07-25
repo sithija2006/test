@@ -623,7 +623,10 @@ async function initializeVideoCall() {
 
     console.log("Requesting media with constraints:", constraints)
     localStream = await navigator.mediaDevices.getUserMedia(constraints)
-    console.log("Got local stream:", localStream.getTracks().map(t => t.kind))
+    console.log(
+      "Got local stream:",
+      localStream.getTracks().map((t) => t.kind),
+    )
 
     localVideo.srcObject = localStream
     localVideoPlaceholder.style.display = "none"
@@ -631,7 +634,7 @@ async function initializeVideoCall() {
     localVideo.playsInline = true
     localVideo.muted = true
     localVideo.setAttribute("webkit-playsinline", "true")
-    
+
     // Ensure local video plays
     await localVideo.play()
 
@@ -693,22 +696,22 @@ async function createPeerConnection() {
   peerConnection.ontrack = (event) => {
     console.log("Received remote track:", event.track.kind)
     console.log("Remote streams:", event.streams)
-    
+
     if (event.streams && event.streams[0]) {
       remoteStream = event.streams[0]
       remoteVideo.srcObject = remoteStream
       remoteVideo.playsInline = true
       remoteVideo.setAttribute("webkit-playsinline", "true")
-      
+
       // Ensure video plays
-      remoteVideo.play().catch(e => console.log("Remote video play error:", e))
-      
+      remoteVideo.play().catch((e) => console.log("Remote video play error:", e))
+
       // Hide placeholder when video starts playing
       remoteVideo.onloadedmetadata = () => {
         console.log("Remote video metadata loaded")
         remoteVideoPlaceholder.style.display = "none"
       }
-      
+
       remoteVideo.onplaying = () => {
         console.log("Remote video is playing")
         remoteVideoPlaceholder.style.display = "none"
@@ -767,6 +770,7 @@ function showIncomingCallNotification(callData) {
 
   if (incomingCallNotification) {
     incomingCallNotification.dataset.offer = JSON.stringify(callData.data.offer)
+    incomingCallNotification.dataset.callerUser = JSON.stringify(callData.data.callerUser)
     incomingCallNotification.classList.remove("hidden")
 
     // Auto-hide after 30 seconds
@@ -815,6 +819,7 @@ function showIncomingCallModal(callData) {
   }
   if (incomingCallModal) {
     incomingCallModal.dataset.offer = JSON.stringify(callData.data.offer)
+    incomingCallModal.dataset.callerUser = JSON.stringify(callData.data.callerUser)
     incomingCallModal.classList.remove("hidden")
   }
   document.body.style.overflow = "hidden"
@@ -828,7 +833,7 @@ function hideIncomingCallModal() {
 }
 
 // Ringtone functions - DISABLED
-let ringtoneAudio = null
+const ringtoneAudio = null
 
 function playRingtone() {
   // Ringtone disabled per user request
@@ -901,7 +906,7 @@ async function startVideoCall() {
   if (!selectedUser || isCallActive) return
 
   console.log("Starting video call with:", selectedUser.displayName)
-  
+
   const hasMedia = await initializeVideoCall()
   if (!hasMedia) return
 
@@ -938,7 +943,7 @@ async function startVideoCall() {
 
 async function answerVideoCall(offer) {
   console.log("Answering video call with offer:", offer)
-  
+
   const hasMedia = await initializeVideoCall()
   if (!hasMedia) return
 
@@ -949,7 +954,7 @@ async function answerVideoCall(offer) {
 
     console.log("Setting remote description")
     await peerConnection.setRemoteDescription(new RTCSessionDescription(offer))
-    
+
     console.log("Creating answer")
     const answer = await peerConnection.createAnswer()
     await peerConnection.setLocalDescription(answer)
@@ -1162,6 +1167,75 @@ function listenForCallSignals() {
       }
     }
   })
+}
+
+// Global call listener - listens for incoming calls from any user
+function listenForAllIncomingCalls() {
+  if (!currentUser) return
+
+  // Listen for calls directed to current user from any sender
+  const callsRef = collection(db, "calls")
+  const q = query(callsRef, where("to", "==", currentUser.uid))
+
+  const unsubscribe = onSnapshot(q, (snapshot) => {
+    snapshot.docChanges().forEach((change) => {
+      if (change.type === "added" || change.type === "modified") {
+        const callData = change.doc.data()
+        const callId = change.doc.id
+
+        // Only process recent calls (within last 30 seconds)
+        const now = new Date()
+        const callTime = callData.timestamp?.toDate() || now
+        const timeDiff = now - callTime
+
+        if (timeDiff > 30000) return // Ignore old calls
+
+        console.log("Global call received:", callData.type, "from:", callData.from)
+
+        if (callData.type === "call-offer" && callData.to === currentUser.uid) {
+          // Find the caller's info
+          findUserById(callData.from).then((callerUser) => {
+            if (callerUser) {
+              // Set the caller as selected user temporarily for the call
+              const callDataWithUser = {
+                ...callData,
+                data: {
+                  ...callData.data,
+                  callerName: callerUser.displayName || callerUser.email?.split("@")[0] || "Unknown User",
+                  callerUser: callerUser,
+                },
+              }
+
+              // Show incoming call UI
+              showIncomingCallNotification(callDataWithUser)
+              showIncomingCallModal(callDataWithUser)
+
+              // Temporarily set as selected user for call handling
+              selectedUser = callerUser
+            }
+          })
+        }
+      }
+    })
+  })
+
+  return unsubscribe
+}
+
+// Helper function to find user by ID
+async function findUserById(userId) {
+  try {
+    const userRef = doc(db, "users", userId)
+    const userSnap = await getDoc(userRef)
+
+    if (userSnap.exists()) {
+      return { id: userSnap.id, ...userSnap.data() }
+    }
+    return null
+  } catch (error) {
+    console.error("Error finding user:", error)
+    return null
+  }
 }
 
 // Authentication functions
@@ -1970,6 +2044,13 @@ if (videoCallBtn) {
 if (acceptCallBtn) {
   acceptCallBtn.addEventListener("click", async () => {
     const offer = JSON.parse(incomingCallModal?.dataset.offer || "{}")
+    const callerData = JSON.parse(incomingCallModal?.dataset.callerUser || "{}")
+
+    // Ensure we have the caller set as selected user
+    if (callerData && callerData.uid) {
+      selectedUser = callerData
+    }
+
     hideIncomingCallModal()
     hideIncomingCallNotification()
     await answerVideoCall(offer)
@@ -1979,6 +2060,13 @@ if (acceptCallBtn) {
 if (notificationAcceptBtn) {
   notificationAcceptBtn.addEventListener("click", async () => {
     const offer = JSON.parse(incomingCallNotification?.dataset.offer || "{}")
+    const callerData = JSON.parse(incomingCallNotification?.dataset.callerUser || "{}")
+
+    // Ensure we have the caller set as selected user
+    if (callerData && callerData.uid) {
+      selectedUser = callerData
+    }
+
     hideIncomingCallNotification()
     hideIncomingCallModal()
     await answerVideoCall(offer)
@@ -2035,6 +2123,9 @@ onAuthStateChanged(auth, async (user) => {
     await saveUserToFirestore(user)
     loadUsers()
     initializeEmojiPicker()
+
+    // Start listening for incoming calls globally
+    listenForAllIncomingCalls()
 
     // Request notification permission
     if ("Notification" in window && Notification.permission === "default") {
